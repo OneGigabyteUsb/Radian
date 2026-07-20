@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBB } from "three/addons/math/OBB.js";
 
-THREE.Cache.enabled = true; // reuse already-loaded textures/models instead of re-fetching them for every part
+THREE.Cache.enabled = true;
 
 const scene = new THREE.Scene()
 scene.background = new THREE.Color(0x01A2DF);
@@ -12,8 +12,11 @@ let velocityY = 0;
 const gravity = -0.03;
 let isClimbing = false;
 const climbSpeed = 0.12;
-const CLIMB_STICK = 0.05; // how much overlap to leave on climbable side-contact, so isClimbing doesn't flicker
-const climbNormal = new THREE.Vector3(); // direction away from the climbable surface, updated while isClimbing is true
+const CLIMB_STICK = 0.05;
+const climbNormal = new THREE.Vector3();
+const climbLaunchVelocity = new THREE.Vector3();
+const CLIMB_LAUNCH_SPEED = 5;]
+const CLIMB_LAUNCH_DAMPING = 3.5;
 const groundY = 0;
 let Siftlock = false
 let Health = 100
@@ -24,6 +27,9 @@ let Grafic = 1;
 
 let Paused = false;
 let Siting = false;
+let sitCooldown = 0;
+const SIT_COOLDOWN_TIME = 20;
+const SEAT_HEIGHT_OFFSET = 0.55;
 
 let delta;
 let dt;
@@ -35,7 +41,7 @@ let b;
 
 let target;
 
-const charForward = new THREE.Vector3(); // reused every collision check instead of allocating
+const charForward = new THREE.Vector3();
 let isFacingWall;
 let pushOverlap;
 let isVertical;
@@ -48,15 +54,15 @@ let ratio;
 let percentage;
 
 let totalDeltaY = velocityY * dt;
-const maxStep = 0.05; // smaller than your thinnest platform's height
-const MAX_SUBSTEPS = 8; // ceiling on how many collision passes one frame can trigger
+const maxStep = 0.05;
+const MAX_SUBSTEPS = 8;
 let steps = Math.min(MAX_SUBSTEPS, Math.max(1, Math.ceil(Math.abs(totalDeltaY) / maxStep)));
 let stepY = totalDeltaY / steps;
 
 //Made Game Faster code
 
-const lockQuaternion = new THREE.Quaternion();   // reused every frame instead of allocating
-const targetQuaternion = new THREE.Quaternion(); // reused every frame instead of allocating
+const lockQuaternion = new THREE.Quaternion();
+const targetQuaternion = new THREE.Quaternion();
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
 const heightOffset = 2.5;
 let targetRotationY;
@@ -74,6 +80,7 @@ let rightZ;
 const menuButton = document.getElementById('menuButton');
 const chatButton = document.getElementById('chatButton');
 const emoteButton = document.getElementById('emoteButton');
+const loadingScreen = document.getElementById('load');
 
 const centerMenu = document.getElementById('centerMenu');
 const resumeButton = document.getElementById('resumeButton');
@@ -113,8 +120,6 @@ document.addEventListener('click', function () {
 	}
 });
 
-// Chat and emote buttons don't open the center menu — wire up their own
-// panels/behavior here when you're ready.
 chatButton.addEventListener('click', function (event) {
 	event.stopPropagation();
 	console.log('Chat... does nothing >:3');
@@ -139,13 +144,22 @@ const healthBar = document.getElementById("health-bar");
 const title = document.getElementById("title");
 
 const camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 1000 )
-camera.rotation.order = 'YXZ'; // Prevent screen twisting
+camera.rotation.order = 'YXZ;
 
-let theta = 0;          // Horizontal orbit angle
-let phi = 0;            // Vertical orbit angle
-let distance = 8;          // Strict camera distance from the model
-const sensitivity = 0.007; // Look speed adjustment
+let theta = 0;
+let phi = 0;
+let distance = 8;
+const sensitivity = 0.007;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const FIRST_PERSON_DISTANCE = 1.2;
+const FIRST_PERSON_FADE_START = 2.5;
+const characterMeshes = [];
+
+const CAMERA_COLLISION_BUFFER = 0.3;
+const cameraRaycaster = new THREE.Raycaster();
+const cameraPivot = new THREE.Vector3();
+const cameraDir = new THREE.Vector3();
 
 
 let isDragging = false;
@@ -155,10 +169,12 @@ const listener = new THREE.AudioListener();
 camera.add(listener);
 
 const activeParts = [];
-const sharedTextureLoader = new THREE.TextureLoader(); // reuse instead of "new TextureLoader()" per texture
-const textureCache = new Map();   // url+repeat -> THREE.Texture, so identical tiles share one GPU texture
-const materialCache = new Map();  // cache key -> THREE.MeshStandardMaterial, so identical-looking parts share one material
-const geometryCache = new Map();  // "sx|sy|sz" -> THREE.BoxGeometry, so same-sized parts share one geometry buffer
+const dynamicParts = [];
+const collidableMeshes = [];
+const sharedTextureLoader = new THREE.TextureLoader();
+const textureCache = new Map();
+const materialCache = new Map();
+const geometryCache = new Map();
 
 function getCachedTexture(url, repeatX, repeatZ) {
     const key = `${url}|${repeatX}|${repeatZ}`;
@@ -183,26 +199,40 @@ function getCachedMaterial(key, factory) {
     return mat;
 }
 
+const MATERIALS = {
+    plastic: "textures/Plastic.png",
+    grass: "textures/Grass.png",
+    wood: "textures/Wood.png",
+    planks: "textures/Planks.png",
+    stone: "textures/Stone.png",
+    pebble: "textures/Pebble.png",
+    brick: "textures/Brick.png"
+};
+
 class CreatePart {
     constructor({
         x = 0, y = 0, z = 0,
         sx = 1, sy = 1, sz = 1,
         rx = 0, ry = 0, rz = 0,
         color = "#ffffff",
-       
-        topTexture = "texture.png",
-        bottomTexture = "texture2.png",
-       
+
+        material = plastic,
+
         killbrick = false,
         CanCollide = false,
         isSpawnLocation = false,
+        Transparency = 1,
         IsClimbable = false,
-        Siting = false
+        Siting = false,
+        Anchored = true
     } = {}) {
         this.killbrick = killbrick;
         this.isSpawnLocation = isSpawnLocation;
         this.CanCollide = CanCollide;
         this.IsClimbable = IsClimbable;
+        this.Anchored = Anchored;
+        this.velocity = new THREE.Vector3();
+        this._grounded = false;
 
         this.x = x
         this.y = y
@@ -216,11 +246,12 @@ class CreatePart {
 
         this.Siting = Siting
 
-        // Keep the raw definition around so maps can be re-serialized later.
+        const texturePath = material && MATERIALS[material] ? MATERIALS[material] : null;
+
         this.def = {
-            x, y, z, sx, sy, sz, rx, ry, rz, color,
-            topTexture, bottomTexture,
-            killbrick, CanCollide, isSpawnLocation, IsClimbable
+            x, y, z, sx, sy, sz, rx, ry, rz, color, material,
+            killbrick, CanCollide, isSpawnLocation, IsClimbable, Anchored,
+            Transparency
         };
 
         const geomKey = `${sx}|${sy}|${sz}`;
@@ -229,27 +260,32 @@ class CreatePart {
             geometry = new THREE.BoxGeometry(sx, sy, sz);
             geometryCache.set(geomKey, geometry);
         }
-        const repeatX = sx / 2.5;
-        const repeatZ = sz / 2.5;
+        const TILE_SIZE = 2.5;
+        const repeatX = sx / TILE_SIZE;
+        const repeatZ = sz / TILE_SIZE;
+        const repeatY = sy / TILE_SIZE;
 
-        let sideMat = getCachedMaterial(`side|${color}`, () => new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSided }));
-        let topMat = sideMat;
-        let bottomMat = sideMat;
+        let mat;
+        if (texturePath) {
+            const topTex = getCachedTexture(texturePath, repeatX, repeatZ);
+            const topBottomMat = getCachedMaterial(`mat-tb|${color}|${texturePath}|${repeatX}|${repeatZ}`, () => new THREE.MeshStandardMaterial({ color, map: topTex }));
 
-        if (topTexture) {
-            const tex = getCachedTexture(topTexture, repeatX, repeatZ);
-            const tex2 = getCachedTexture(bottomTexture, repeatX, repeatZ);
+           
+            const sideTexX = getCachedTexture(texturePath, repeatZ, repeatY);
+            const sideTexZ = getCachedTexture(texturePath, repeatX, repeatY);
+            const sideMatX = getCachedMaterial(`mat-sideX|${color}|${texturePath}|${repeatZ}|${repeatY}`, () => new THREE.MeshStandardMaterial({ color, map: sideTexX }));
+            const sideMatZ = getCachedMaterial(`mat-sideZ|${color}|${texturePath}|${repeatX}|${repeatY}`, () => new THREE.MeshStandardMaterial({ color, map: sideTexZ }));
 
-            //---Load Mesh With Texture Bro---\\
-
-            topMat = getCachedMaterial(`top|${color}|${topTexture}|${repeatX}|${repeatZ}`, () => new THREE.MeshStandardMaterial({ color, map: tex }));
-            bottomMat = getCachedMaterial(`bottom|${color}|${bottomTexture}|${repeatX}|${repeatZ}`, () => new THREE.MeshStandardMaterial({ color, map: tex2 }));
+            mat = [sideMatX, sideMatX, topBottomMat, topBottomMat, sideMatZ, sideMatZ];
+        } else {
+            mat = getCachedMaterial(`plain|${color}`, () => new THREE.MeshStandardMaterial({ color }));
         }
 
-        const materials = [sideMat, sideMat, topMat, bottomMat, sideMat, sideMat];
-        this.mesh = new THREE.Mesh(geometry, materials);
+        this.mesh = new THREE.Mesh(geometry, mat);
+        this.mesh.transparent = true;
+        this.mesh.opacity = Transparency;
         this.mesh.position.set(x, y, z);
-        this.mesh.rotation.set(rx, ry, rz); // rotation is now actually applied to the mesh
+        this.mesh.rotation.set(rx, ry, rz);
         this.mesh.castShadow = true;
         this.mesh.receiveShadow = true;
 
@@ -259,11 +295,11 @@ class CreatePart {
         );
         this.obb = this.localOBB.clone();
 
-        // Bounding-sphere radius (rotation-independent) for a cheap broad-phase distance check,
-        // so far-away parts can skip the expensive SAT overlap test entirely.
         this.boundingRadius = Math.sqrt((sx / 2) ** 2 + (sy / 2) ** 2 + (sz / 2) ** 2);
 
         activeParts.push(this);
+        if (!this.Anchored) dynamicParts.push(this);
+        if (!this.CanCollide) collidableMeshes.push(this.mesh);
     }
 
     addTo(targetScene) {
@@ -278,7 +314,7 @@ class CreatePart {
 }
 
 function getOBBAxes(obb, out) {
-    const e = obb.rotation.elements; // column-major: each column is a local axis in world space
+    const e = obb.rotation.elements;
     out[0].set(e[0], e[1], e[2]);
     out[1].set(e[3], e[4], e[5]);
     out[2].set(e[6], e[7], e[8]);
@@ -331,13 +367,13 @@ function resolveOBBOverlap(a, b) {
         const dist = Math.abs(_centerDelta.dot(axis));
         const overlap = rA + rB - dist;
 
-        if (overlap <= 0) return null; // found a separating axis -> no collision
+        if (overlap <= 0) return null;
 
         if (overlap < minOverlap) {
             minOverlap = overlap;
             found = true;
             _minAxis.copy(axis);
-            if (_centerDelta.dot(_minAxis) < 0) _minAxis.negate(); // point from b -> a
+            if (_centerDelta.dot(_minAxis) < 0) _minAxis.negate();
         }
     }
 
@@ -348,19 +384,21 @@ function resolveOBBOverlap(a, b) {
 }
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 2x on a retina/4K display renders ~1.8x more pixels for barely-visible sharpness gain
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap; // PCFSoftShadowMap does extra samples per pixel; regular PCF looks close to identical here for a big perf win
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setSize(window.innerWidth, window.innerHeight)
 document.body.appendChild(renderer.domElement)
 
-let modelReady = false;   // flips true once the gltf character has loaded
-let pendingSpawn = null;  // a spawn point waiting for the model to be ready
+let modelReady = false;
+let pendingSpawn = null;
 let currentMapData = null;
 
 function clearMap() {
     activeParts.forEach(part => scene.remove(part.mesh));
     activeParts.length = 0;
+    dynamicParts.length = 0;
+    collidableMeshes.length = 0;
 }
 
 function loadMap(mapData) {
@@ -394,7 +432,7 @@ async function loadMapFromURL(url) {
 }
 
 window.loadMap = loadMap;
-window.CreatePart = CreatePart; // expose the class itself, not an instance (instantiating here was creating a stray, unused part every load)
+window.CreatePart = CreatePart;
 window.THREE = THREE;
 window.scene = scene;
 window.spawn = spawn;
@@ -431,7 +469,7 @@ const defaultMap = {
 window.defaultMap = defaultMap;
 window.loadMapFromURL = loadMapFromURL;
 window.clearMap = clearMap;
-loadMap(defaultMap);
+loadMapFromURL("maps/Demo.json");
 
 
 //const floor = new CreatePart({ x: 0, y: -0.5, z: 0, sx: 60, sy: 1, sz: 60, color: "#5cb85c" });
@@ -458,14 +496,16 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(30, 40, 20);
 sun.castShadow = true;
 sun.shadow.normalBias = 0.02;
-//sun.shadow.mapSize.set(1024, 1024); // 2048 is 4x the pixel cost of 1024 for a scene this size
-sun.shadow.camera.left = -110;
-sun.shadow.camera.right = 110;
-sun.shadow.camera.top = 110;
-sun.shadow.camera.bottom = -110;
-sun.shadow.camera.far = 150;
-sun.shadow.bias = 0.0001; // tighter frustum can introduce shadow acne; this offsets it
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -40;
+sun.shadow.camera.right = 40;
+sun.shadow.camera.top = 40;
+sun.shadow.camera.bottom = -40;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 110;
+sun.shadow.bias = 0.0001;
 scene.add(sun);
+scene.add(sun.target);
 
 let mixer = null;
 let animationsMap = {};
@@ -514,6 +554,9 @@ gltf.scene.traverse((obj) => {
         obj.receiveShadow = true;
         obj.castShadow = false;
     }
+
+    obj.material.transparent = true;
+    characterMeshes.push(obj);
 });
 
 //---Sounds---\\\
@@ -572,7 +615,7 @@ const playerBoundingRadius = Math.sqrt(0.65 * 0.65 + (hitboxHeight / 2) * (hitbo
 
 function syncPlayerHitbox() {
     playerHitboxMesh.position.copy(gltf.scene.position);
-    playerHitboxMesh.quaternion.copy(gltf.scene.quaternion); // hitbox now turns with the character
+    playerHitboxMesh.quaternion.copy(gltf.scene.quaternion);
     playerHitboxMesh.updateMatrixWorld(true);
 
     playerOBB.copy(playerLocalOBB);
@@ -583,41 +626,37 @@ function GraficsUpdate() {
    if (GraficsSlider.value === "1") {
        sun.shadow.mapSize.width = 2048;
        sun.shadow.mapSize.height = 2048;
-       console.log("a")
-   }
-
-   if (GraficsSlider.value === "2") {
+   } else if (GraficsSlider.value === "2") {
        sun.shadow.mapSize.width = 3072;
        sun.shadow.mapSize.height = 3072;
-   }
-
-   if (GraficsSlider.value === "3") {
+   } else if (GraficsSlider.value === "3") {
        sun.shadow.mapSize.width = 4096;
        sun.shadow.mapSize.height = 4096;
-   }
-
-   if (GraficsSlider.value === "4") {
-       sun.shadow.mapSize.width = 5120;
-       sun.shadow.mapSize.height = 5120;
-   }
-
-   if (GraficsSlider.value === "4") {
+   } else if (GraficsSlider.value === "4") {
        sun.shadow.mapSize.width = 6144;
        sun.shadow.mapSize.height = 6144;
-   }
-
-   if (GraficsSlider.value === "5") {
+   } else if (GraficsSlider.value === "5") {
        sun.shadow.mapSize.width = 7168;
        sun.shadow.mapSize.height = 7168;
    }
-   sun.shadow.map.dispose();
-   sun.shadow.map = null;
+
+   if (sun.shadow.map) {
+       sun.shadow.map.dispose();
+       sun.shadow.map = null;
+   }
    renderer.shadowMap.needsUpdate = true;
 }
 
 GraficsSlider.addEventListener('input', function() {
     GraficsUpdate()
 });
+const partGravity = -0.03;
+const partTerminalVelocity = 3;
+const _partPushVec = new THREE.Vector3();
+const PART_PUSH_SHARE = 0.0;
+const PART_PUSH_SPEED = 0.04;
+const PART_FRICTION = 0.24;
+
 function checkPartCollisions() {
     syncPlayerHitbox();
 
@@ -629,8 +668,6 @@ function checkPartCollisions() {
     for (let i = 0; i < activeParts.length; i++) {
         const part = activeParts[i];
 
-        // Broad-phase: skip the expensive matrix update + 15-axis SAT test for parts
-        // that couldn't possibly be touching the player, based on a cheap distance check.
         const dx = part.x - px;
         const dy = part.y - py;
         const dz = part.z - pz;
@@ -651,14 +688,13 @@ function checkPartCollisions() {
             SetSpawn(part.x, part.y + part.sy, part.z);
         }
 
-        if (part.Siting) {
+        if (part.Siting && sitCooldown <= 0) {
             velocityY = 0
             Siting = true
             fadeToAnimation("Sit")
-            gltf.scene.position.x = part.x
-            gltf.scene.position.z = part.z
+            gltf.scene.position.set(part.x, part.y + SEAT_HEIGHT_OFFSET, part.z)
             gltf.scene.rotation.y = part.rx
-            console.log(gltf.scene.rotation.y)
+            continue
         }
 
         isVertical = Math.abs(hit.axis.y) > 0.5;
@@ -671,10 +707,30 @@ function checkPartCollisions() {
         if (part.IsClimbable && !isVertical && isFacingWall ) {
             isClimbing = true;
             climbNormal.copy(hit.axis);
+            climbLaunchVelocity.set(0, 0, 0);
             pushOverlap = Math.max(0, hit.overlap - CLIMB_STICK);
         }
 
         if (part.CanCollide) continue;
+
+        if (!part.Anchored && !isVertical) {
+            const pushToBlock = pushOverlap * PART_PUSH_SHARE;
+            const pushToPlayer = pushOverlap - pushToBlock;
+
+            _partPushVec.copy(hit.axis).multiplyScalar(-pushToBlock);
+            part.x += _partPushVec.x;
+            part.z += _partPushVec.z;
+            part.mesh.position.set(part.x, part.y, part.z);
+            part.updateHitbox();
+
+            part.velocity.x += -hit.axis.x * PART_PUSH_SPEED;
+            part.velocity.z += -hit.axis.z * PART_PUSH_SPEED;
+
+            _pushVec.copy(hit.axis).multiplyScalar(pushToPlayer);
+            gltf.scene.position.add(_pushVec);
+            syncPlayerHitbox();
+            continue;
+        }
 
         _pushVec.copy(hit.axis).multiplyScalar(pushOverlap);
         gltf.scene.position.add(_pushVec);
@@ -683,9 +739,63 @@ function checkPartCollisions() {
         if (isVertical) {
             velocityY = 0;
             if (hit.axis.y > 0) {
-                isGrounded = true; // pushed upward -> standing on top of the part
+                isGrounded = true;
             }
-            // pushed downward -> bonked a ceiling from below
+        }
+    }
+}
+
+function stepDynamicParts(dt) {
+    for (let i = 0; i < dynamicParts.length; i++) {
+        const part = dynamicParts[i];
+        const wasGrounded = !!part._grounded;
+
+        part.velocity.y += partGravity * dt;
+        part.velocity.y = Math.max(-partTerminalVelocity, Math.min(partTerminalVelocity, part.velocity.y));
+
+        if (wasGrounded) {
+            const friction = Math.max(0, 1 - PART_FRICTION * dt);
+            part.velocity.x *= friction;
+            part.velocity.z *= friction;
+            if (Math.abs(part.velocity.x) < 0.001) part.velocity.x = 0;
+            if (Math.abs(part.velocity.z) < 0.001) part.velocity.z = 0;
+        }
+
+        part.x += part.velocity.x * dt;
+        part.y += part.velocity.y * dt;
+        part.z += part.velocity.z * dt;
+
+        part.mesh.position.set(part.x, part.y, part.z);
+        part.updateHitbox();
+
+        part._grounded = false;
+
+        for (let j = 0; j < activeParts.length; j++) {
+            const other = activeParts[j];
+            if (other === part) continue;
+
+            const dx = other.x - part.x, dy = other.y - part.y, dz = other.z - part.z;
+            const reach = other.boundingRadius + part.boundingRadius;
+            if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
+
+            other.updateHitbox();
+            const hit = resolveOBBOverlap(part.obb, other.obb);
+            if (!hit || other.CanCollide) continue;
+
+            _partPushVec.copy(hit.axis).multiplyScalar(hit.overlap);
+            part.x += _partPushVec.x;
+            part.y += _partPushVec.y;
+            part.z += _partPushVec.z;
+            part.mesh.position.set(part.x, part.y, part.z);
+            part.updateHitbox();
+
+            if (Math.abs(hit.axis.y) > 0.5) {
+                part.velocity.y = 0;
+                if (hit.axis.y > 0) part._grounded = true;
+            } else {
+                part.velocity.x = 0;
+                part.velocity.z = 0;
+            }
         }
     }
 }
@@ -738,7 +848,7 @@ window.addEventListener('mouseup', (event) => {
 
 window.addEventListener('wheel', (event) => {
     distance += event.deltaY * 0.05;
-    distance = Math.max(3, Math.min(260, distance));
+    distance = Math.max(FIRST_PERSON_DISTANCE, Math.min(260, distance));
 });
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -765,12 +875,12 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.code === "Space") {
+    if (Siting === true) sitCooldown = SIT_COOLDOWN_TIME;
     Siting = false
     if (isClimbing) {
       isClimbing = false;
       velocityY = JumpPower;
-      gltf.scene.position.addScaledVector(climbNormal, 0.4);
-      syncPlayerHitbox();
+      climbLaunchVelocity.copy(climbNormal).multiplyScalar(CLIMB_LAUNCH_SPEED);
       globalSound.play();
     } else if (velocityY === 0) {
       velocityY = JumpPower; 
@@ -874,7 +984,7 @@ window.isClimbing = isClimbing
 function animate() {
     requestAnimationFrame(animate);
 
-    delta = clock.getDelta(); // grab it once, at the top
+    delta = clock.getDelta();
     dt = delta * 60;
 
     if (playerHitboxMesh.position.y <= -90) {
@@ -888,6 +998,10 @@ function animate() {
     percentage = ratio * 100
     fill.style.width = percentage + "%";
 
+    setTimeout(() => {
+        loadingScreen.classList.add('hidden');
+    }, 1350);
+
     r = Math.floor((1.5 - ratio) * 255); -3
     g = Math.floor(ratio * 255); -3
     b = 25;
@@ -897,7 +1011,11 @@ function animate() {
     CheckHealth()
 
     if (gltf && gltf.scene) {
-        if (isClimbing === false) {
+        if (sitCooldown > 0) sitCooldown -= dt;
+
+        if (Siting === true) {
+            velocityY = 0;
+        } else if (isClimbing === false) {
             velocityY += gravity * dt;
         } else if (isClimbing === true && Paused === false)  {
             velocityY = 0;
@@ -956,8 +1074,20 @@ function animate() {
             }
         }
 
+        if (climbLaunchVelocity.lengthSq() > 0.0001) {
+            gltf.scene.position.addScaledVector(climbLaunchVelocity, dt);
+            const launchDamping = Math.max(0, 1 - CLIMB_LAUNCH_DAMPING * dt);
+            climbLaunchVelocity.multiplyScalar(launchDamping);
+            if (climbLaunchVelocity.lengthSq() < 0.0004) climbLaunchVelocity.set(0, 0, 0);
+        }
 
-        if (!isGrounded) {
+
+        if (Siting) {
+            if (currentState !== "sit") {
+                fadeToAnimation('Sit');
+                currentState = "sit";
+            }
+        } else if (!isGrounded) {
             if (currentState !== "jump") {
                 fadeToAnimation('Jump');
                 currentState = "jump";
@@ -984,18 +1114,45 @@ function animate() {
         }
 
         checkPartCollisions();
+        stepDynamicParts(dt);
 
         target = playerHitboxMesh.position;
-        camera.position.x = target.x + distance * Math.sin(theta) * Math.cos(phi);
-        camera.position.z = target.z + distance * Math.cos(theta) * Math.cos(phi);
-        //sun.position.set(playerHitboxMesh.position.x + 30, playerHitboxMesh.position.y + 40, playerHitboxMesh.position.z + 20);
+
+        cameraPivot.set(target.x, target.y + heightOffset, target.z);
+        cameraDir.set(
+            Math.sin(theta) * Math.cos(phi),
+            Math.sin(phi),
+            Math.cos(theta) * Math.cos(phi)
+        );
+        cameraRaycaster.set(cameraPivot, cameraDir);
+        cameraRaycaster.near = 0;
+        cameraRaycaster.far = distance;
+        const cameraHits = cameraRaycaster.intersectObjects(collidableMeshes, false);
+        const effectiveDistance = cameraHits.length > 0
+            ? Math.max(FIRST_PERSON_DISTANCE, cameraHits[0].distance - CAMERA_COLLISION_BUFFER)
+            : distance;
+
+        camera.position.x = target.x + effectiveDistance * Math.sin(theta) * Math.cos(phi);
+        camera.position.z = target.z + effectiveDistance * Math.cos(theta) * Math.cos(phi);
+        sun.position.set(target.x + 30, target.y + 40, target.z + 20);
+        sun.target.position.set(target.x, target.y, target.z);
+
+        const firstPersonFade = THREE.MathUtils.clamp(
+            (effectiveDistance - FIRST_PERSON_DISTANCE) / (FIRST_PERSON_FADE_START - FIRST_PERSON_DISTANCE),
+            0, 1
+        );
+        for (let i = 0; i < characterMeshes.length; i++) {
+            const meshPart = characterMeshes[i];
+            meshPart.material.opacity = firstPersonFade;
+            meshPart.visible = firstPersonFade > 0.01;
+        }
 
         if (Siting === false) {
-           camera.position.y = target.y + heightOffset + distance * Math.sin(phi);
+           camera.position.y = target.y + heightOffset + effectiveDistance * Math.sin(phi);
         }
 
         if (Siting === true) {
-           camera.position.y = target.y + heightOffset + distance * Math.sin(phi);
+           camera.position.y = target.y + heightOffset + effectiveDistance * Math.sin(phi);
         }
         camera.lookAt(target.x, target.y + heightOffset, target.z);
 
