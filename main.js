@@ -6,7 +6,6 @@ import { OBB } from "three/addons/math/OBB.js";
 THREE.Cache.enabled = true;
 
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x01A2DF);
 
 let velocityY = 0;
 const gravity = -0.03;
@@ -15,7 +14,7 @@ const climbSpeed = 0.12;
 const CLIMB_STICK = 0.05;
 const climbNormal = new THREE.Vector3();
 const climbLaunchVelocity = new THREE.Vector3();
-const CLIMB_LAUNCH_SPEED = 5;]
+const CLIMB_LAUNCH_SPEED = 5;
 const CLIMB_LAUNCH_DAMPING = 3.5;
 const groundY = 0;
 let Siftlock = false
@@ -61,10 +60,10 @@ let stepY = totalDeltaY / steps;
 
 //Made Game Faster code
 
-const lockQuaternion = new THREE.Quaternion();
-const targetQuaternion = new THREE.Quaternion();
+const lockQuaternion = new THREE.Quaternion();   // reused every frame instead of allocating
+const targetQuaternion = new THREE.Quaternion(); // reused every frame instead of allocating
 const UP_AXIS = new THREE.Vector3(0, 1, 0);
-const heightOffset = 2.5;
+const heightOffset = 2.7;
 let targetRotationY;
 
 let walkAnim;
@@ -133,7 +132,7 @@ emoteButton.addEventListener('click', function (event) {
 // yay
 
 let JumpPower = 0.54;
-let WalkSpeed = -0.2;
+let WalkSpeed = -0.18;
 let spawn = new THREE.Vector3();
 
 function SetSpawn(x,y,z) {
@@ -144,7 +143,7 @@ const healthBar = document.getElementById("health-bar");
 const title = document.getElementById("title");
 
 const camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 1000 )
-camera.rotation.order = 'YXZ;
+camera.rotation.order = 'YXZ';
 
 let theta = 0;
 let phi = 0;
@@ -206,8 +205,10 @@ const MATERIALS = {
     planks: "textures/Planks.png",
     stone: "textures/Stone.png",
     pebble: "textures/Pebble.png",
-    brick: "textures/Brick.png"
+    brick: "textures/Brick.png",
+    concrete: "textures/concrete.png"
 };
+
 
 class CreatePart {
     constructor({
@@ -216,7 +217,7 @@ class CreatePart {
         rx = 0, ry = 0, rz = 0,
         color = "#ffffff",
 
-        material = plastic,
+        material = null,
 
         killbrick = false,
         CanCollide = false,
@@ -384,11 +385,14 @@ function resolveOBBOverlap(a, b) {
 }
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
+// renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setSize(window.innerWidth, window.innerHeight)
 document.body.appendChild(renderer.domElement)
+
+scene.environment = null;
 
 let modelReady = false;
 let pendingSpawn = null;
@@ -453,7 +457,7 @@ function serializeCurrentMap(name, author) {
 const loader = new GLTFLoader();
 const controls = new OrbitControls(camera, renderer.domElement)
 
-const ambientLight = new THREE.AmbientLight( 0x616161 );
+const ambientLight = new THREE.AmbientLight( '#B3C4FF' );
 scene.add(ambientLight)
 
 const defaultMap = {
@@ -489,7 +493,8 @@ loadMapFromURL("maps/Demo.json");
 //const cube2 = new CreatePart({ x: 0, y: 0.5, z: 0, sx: 1, sy: 1, sz: 1, color: "#304173" });
 //cube2.addTo(scene);
 
-const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x1a1a1a, 0.9);
+const hemi = new THREE.HemisphereLight('#9FB4D5', '#2E2E2E', 0.9);
+hemi.position.set(30, 40, 20);
 scene.add(hemi);
 
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -497,15 +502,18 @@ sun.position.set(30, 40, 20);
 sun.castShadow = true;
 sun.shadow.normalBias = 0.02;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -40;
-sun.shadow.camera.right = 40;
-sun.shadow.camera.top = 40;
-sun.shadow.camera.bottom = -40;
+sun.shadow.camera.left = -50;
+sun.shadow.camera.right = 50;
+sun.shadow.camera.top = 50;
+sun.shadow.camera.bottom = -50;
 sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 110;
 sun.shadow.bias = 0.0001;
 scene.add(sun);
 scene.add(sun.target);
+
+scene.fog = new THREE.FogExp2( '#01A2DF', 0.01 );
+scene.background = new THREE.Color('#01A2DF');
 
 let mixer = null;
 let animationsMap = {};
@@ -567,7 +575,7 @@ const audioLoader = new THREE.AudioLoader();
 audioLoader.load('sound/jump.mp3', function(buffer) {
     globalSound.setBuffer(buffer);
     globalSound.setLoop(false);
-    globalSound.setVolume(0.5);
+    globalSound.setVolume(2);
 });
 
 if (gltf.animations && gltf.animations.length > 0) {
@@ -626,18 +634,43 @@ function GraficsUpdate() {
    if (GraficsSlider.value === "1") {
        sun.shadow.mapSize.width = 2048;
        sun.shadow.mapSize.height = 2048;
+
+       sun.shadow.camera.left = -50;
+       sun.shadow.camera.right = 50;
+       sun.shadow.camera.top = 50;
+       sun.shadow.camera.bottom = -50;
    } else if (GraficsSlider.value === "2") {
        sun.shadow.mapSize.width = 3072;
        sun.shadow.mapSize.height = 3072;
+
+       sun.shadow.camera.left = -60;
+       sun.shadow.camera.right = 60;
+       sun.shadow.camera.top = 60;
+       sun.shadow.camera.bottom = -60;
    } else if (GraficsSlider.value === "3") {
        sun.shadow.mapSize.width = 4096;
        sun.shadow.mapSize.height = 4096;
+
+       sun.shadow.camera.left = -70;
+       sun.shadow.camera.right = 70;
+       sun.shadow.camera.top = 70;
+       sun.shadow.camera.bottom = -70;
    } else if (GraficsSlider.value === "4") {
        sun.shadow.mapSize.width = 6144;
        sun.shadow.mapSize.height = 6144;
+
+       sun.shadow.camera.left = -80;
+       sun.shadow.camera.right = 80;
+       sun.shadow.camera.top = 80;
+       sun.shadow.camera.bottom = -80;
    } else if (GraficsSlider.value === "5") {
        sun.shadow.mapSize.width = 7168;
        sun.shadow.mapSize.height = 7168;
+
+       sun.shadow.camera.left = -90;
+       sun.shadow.camera.right = 90;
+       sun.shadow.camera.top = 90;
+       sun.shadow.camera.bottom = -90;
    }
 
    if (sun.shadow.map) {
@@ -819,7 +852,7 @@ function CheckHealth() {
 }
 
 
-//---------Mouse and Keyborad=========\\\
+//=========Mouse and Keyborad=========\\\
 window.addEventListener('mousedown', (event) => {
     if (event.button === 2 || event.button === 0) { 
         isDragging = true;
@@ -938,7 +971,7 @@ function Respawn() {
 window.Respawn = Respawn
 window.SetSpawn = SetSpawn
 
-//---Animation---\\\
+//===Animation===\\\
 
 function fadeToAnimation(nextAnimationName) {
     const nextAction = animationsMap[nextAnimationName.toLowerCase()];
@@ -1088,9 +1121,12 @@ function animate() {
                 currentState = "sit";
             }
         } else if (!isGrounded) {
-            if (currentState !== "jump") {
+            if (currentState !== "jump" && velocityY >= 0) {
                 fadeToAnimation('Jump');
                 currentState = "jump";
+            } else if (velocityY <= -0) {
+                fadeToAnimation('Fall');
+                currentState = "fall";
             }
         } else if (moveDirection.lengthSq() > 0.0001) {
             walkAnim = ItemHeld ? 'itemheld-walk' : "walk";
