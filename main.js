@@ -199,14 +199,14 @@ function getCachedMaterial(key, factory) {
 }
 
 const MATERIALS = {
-    plastic: "textures/Plastic.png",
-    grass: "textures/Grass.png",
-    wood: "textures/Wood.png",
-    planks: "textures/Planks.png",
-    stone: "textures/Stone.png",
-    pebble: "textures/Pebble.png",
-    brick: "textures/Brick.png",
-    concrete: "textures/concrete.png"
+    plastic: "Textures/Plastic.png",
+    grass: "Textures/Grass.png",
+    wood: "Textures/Wood.png",
+    planks: "Textures/Planks.png",
+    stone: "Textures/Stone.png",
+    pebble: "Textures/Pebble.png",
+    brick: "Textures/Brick.png",
+    concrete: "Textures/concrete.png"
 };
 
 
